@@ -1,91 +1,97 @@
 #include <AccelStepper.h>
 
-// --- Pin Definitions ---
-// TBB6600 Driver Pins to Arduino UNO R3
-#define ROTARY_STEP_PIN 8
-#define ROTARY_DIR_PIN 9
-#define ROTARY_EN_PIN 10     // Optional: Enable pin to turn off motor holding torque if needed
+// --- Pin Definitions (Based on your Schematic) ---
+const int ROTARY_STEP_PIN = 5;
+const int ROTARY_DIR_PIN  = 6;
+const int ROTARY_ENA_PIN  = 7;
+const int LIMIT_SWITCH_PIN = 2;
 
-// Micro Electronic Switch for Homing
-#define ROTARY_LIMIT_PIN 3   
+// --- System Settings ---
+// 1.8 degree motor = 200 steps/rev. 
+// TB6600 set to 1/8 Microstepping = 1600 steps/rev.
+const int STEPS_PER_REV = 1600; 
+const int SYRINGE_COUNT = 10;
+const int STEPS_PER_INDEX = STEPS_PER_REV / SYRINGE_COUNT; // 160 steps
 
-// --- System Configurations ---
-const int TOTAL_SAMPLES = 10;
-const int STEPS_PER_REV = 1600; // Assuming 1/8 Microstepping on TBB6600
-const int STEPS_PER_INDEX = STEPS_PER_REV / TOTAL_SAMPLES; // 160 steps
+// --- Variables ---
+int currentSyringeIndex = 0; // Tracks which syringe (0-9) is active
 
-int currentSyringe = 0;
-
-// Initialize Stepper (Type 1 means a stepper driver with Step and Direction pins)
+// Define stepper using Driver mode (Step & Direction)
 AccelStepper rotaryStepper(AccelStepper::DRIVER, ROTARY_STEP_PIN, ROTARY_DIR_PIN);
 
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(115200);
   
-  pinMode(ROTARY_EN_PIN, OUTPUT);
-  pinMode(ROTARY_LIMIT_PIN, INPUT_PULLUP); // Use internal pull-up for the limit switch
+  // 1. Setup Pins
+  pinMode(ROTARY_ENA_PIN, OUTPUT);
+  pinMode(LIMIT_SWITCH_PIN, INPUT_PULLUP); // HIGH when open, LOW when pressed
   
-  digitalWrite(ROTARY_EN_PIN, LOW); // Enable the TBB6600 driver (usually active LOW)
+  // 2. Enable Motor (TB6600: Usually LOW = Enable, HIGH = Disable)
+  digitalWrite(ROTARY_ENA_PIN, LOW); 
 
-  // Configure Motor Dynamics
-  rotaryStepper.setMaxSpeed(500.0);      // Max steps per second
-  rotaryStepper.setAcceleration(200.0);  // Steps per second squared for smooth start/stop
+  // 3. Configure Speed (Steps per second)
+  rotaryStepper.setMaxSpeed(800.0);
+  rotaryStepper.setAcceleration(400.0);
 
-  Serial.println("System Powered. Starting Carousel Homing Sequence...");
-  homeCarousel();
+  // 4. Run Homing Sequence
+  Serial.println("System Start. Homing Rotary Disk...");
+  homeRotaryDisk();
 }
 
 void loop() {
-  // For testing: Send 'n' over Serial Monitor to index to the next syringe
+  // --- Test Interface ---
+  // Type 'n' in Serial Monitor to move to the next syringe
   if (Serial.available() > 0) {
     char cmd = Serial.read();
-    if (cmd == 'n' || cmd == 'N') {
-      moveToNextSyringe();
+    if (cmd == 'n') {
+      nextSyringe();
     }
   }
 
-  // AccelStepper requires this to be called constantly in the loop
-  // It only moves the motor if distanceToGo() != 0
-  rotaryStepper.run(); 
+  // Critical: Must call run() frequently to process movement
+  rotaryStepper.run();
 }
 
-// --- Functions ---
+// --- Helper Functions ---
 
-void homeCarousel() {
-  Serial.println("Homing...");
+void homeRotaryDisk() {
+  // Move CCW slowly until switch is hit
+  rotaryStepper.setSpeed(-200); // Negative speed for homing direction
   
-  // Set a slow speed for homing to prevent crashing hard into the switch
-  rotaryStepper.setSpeed(-150); 
-  
-  // Rotate backward until the limit switch is triggered (reads LOW)
-  while (digitalRead(ROTARY_LIMIT_PIN) == HIGH) {
-    rotaryStepper.runSpeed(); // runSpeed() moves at a constant speed, bypassing acceleration
+  // Keep moving as long as Switch is NOT pressed (HIGH)
+  while (digitalRead(LIMIT_SWITCH_PIN) == HIGH) {
+    rotaryStepper.runSpeed(); // Blocking movement at constant speed
   }
   
-  // Once triggered, set this exact position as Zero
-  rotaryStepper.setCurrentPosition(0);
+  // Stop immediately when Switch is pressed (LOW)
   rotaryStepper.setSpeed(0);
-  currentSyringe = 1; // Mark as Position 1
+  rotaryStepper.setCurrentPosition(0); // Reset internal counter to Zero
   
-  Serial.println("Homing Complete. At Syringe Position 1.");
+  // Optional: Back off slightly to release switch
+  rotaryStepper.runToNewPosition(20); 
+  rotaryStepper.setCurrentPosition(0); // Re-zero
+  
+  currentSyringeIndex = 0;
+  Serial.println("Homing Complete. Disk at Position 0.");
 }
 
-void moveToNextSyringe() {
-  if (currentSyringe >= TOTAL_SAMPLES) {
-    Serial.println("Warning: All 10 samples utilized. Cannot index further.");
-    return;
+void nextSyringe() {
+  if (rotaryStepper.distanceToGo() == 0) { // Only accept command if idle
+    
+    if (currentSyringeIndex < SYRINGE_COUNT - 1) {
+      long targetPos = (currentSyringeIndex + 1) * STEPS_PER_INDEX;
+      
+      Serial.print("Moving to Syringe ");
+      Serial.println(currentSyringeIndex + 1);
+      
+      rotaryStepper.moveTo(targetPos);
+      currentSyringeIndex++;
+      
+    } else {
+      Serial.println("Sequence Complete: All 10 syringes filled.");
+      // Optional: Reset to 0? 
+      // rotaryStepper.moveTo(0); 
+      // currentSyringeIndex = 0;
+    }
   }
-
-  // Calculate the target absolute position
-  // Example: Moving to syringe 2 = 1 * 160 = absolute position 160
-  long targetPosition = currentSyringe * STEPS_PER_INDEX;
-  
-  Serial.print("Indexing to Syringe ");
-  Serial.print(currentSyringe + 1);
-  Serial.print(" (Target Step: ");
-  Serial.print(targetPosition);
-  Serial.println(")");
-
-  rotaryStepper.moveTo(targetPosition);
-  currentSyringe++;
 }
